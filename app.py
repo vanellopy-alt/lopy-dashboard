@@ -20,6 +20,59 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
+# 🚀 데이터 캐싱 함수 (속도 최적화의 핵심!)
+# ==========================================
+# @st.cache_data를 붙이면 한 번 읽은 파일은 메모리에 기억해두어 버튼을 누를 때마다 다시 읽지 않습니다.
+@st.cache_data(show_spinner=False)
+def process_uploaded_files(files):
+    trend_data = []
+    error_logs = []
+
+    for file in files:
+        try:
+            # 엑셀 파일에서 '입찰트래킹' 시트 읽기
+            df = pd.read_excel(file, sheet_name='입찰트래킹', engine='openpyxl')
+            
+            # 업체명 추출
+            if '업체명' in df.columns:
+                v_name = df['업체명'].iloc[0]
+            else:
+                v_name = file.name.split('_')[0]
+
+            # 날짜 추출
+            matches = re.findall(r'(\d{4})', file.name)
+            date_str = matches[-1] if matches else file.name
+
+            # 상태별 집계
+            total_sku = len(df)
+            bad_df = df[df['가격현황'] == 'BAD'].copy()
+            best_df = df[df['가격현황'] == 'BEST PRICE'].copy()
+
+            bad_count = len(bad_df)
+            best_count = len(best_df)
+            best_ratio = (best_count / total_sku * 100) if total_sku > 0 else 0
+
+            trend_data.append({
+                '날짜': str(date_str),
+                '업체명': v_name,
+                '총 SKU': total_sku,
+                'BEST PRICE 비중(%)': round(best_ratio, 1),
+                'BEST PRICE 개수': best_count,
+                'BAD 개수': bad_count,
+                'bad_df': bad_df
+            })
+        except Exception as e:
+            err_msg = str(e)
+            if "Worksheet named '입찰트래킹' not found" in err_msg:
+                error_logs.append({'type': 'warning', 'msg': f"⚠️ '{file.name}' 파일은 이전 버전 양식이거나 '입찰트래킹' 시트가 없어 제외되었습니다."})
+            else:
+                error_logs.append({'type': 'error', 'msg': f"❌ '{file.name}' 읽기 오류: {err_msg}"})
+            continue
+            
+    return trend_data, error_logs
+
+
+# ==========================================
 # 🤖 앱 헤더
 # ==========================================
 st.title("📈 LOPY 최저가 트렌드 & 가격방어 대시보드")
@@ -31,49 +84,17 @@ st.markdown("매일 생성되는 **여러 날짜, 여러 업체의 엑셀 파일
 uploaded_files = st.file_uploader("엑셀 파일 여러 개 동시 업로드 (.xlsx)", type=["xlsx"], accept_multiple_files=True)
 
 if uploaded_files:
-    with st.spinner('데이터를 업체별로 예쁘게 분류하는 중입니다... ⏳'):
-        trend_data = []
+    with st.spinner('데이터를 업체별로 예쁘게 분류하는 중입니다... (최초 1회만 소요) ⏳'):
+        
+        # 캐싱된 초고속 분석 함수 실행
+        trend_data, error_logs = process_uploaded_files(uploaded_files)
 
-        for file in uploaded_files:
-            try:
-                # 엑셀 파일에서 '입찰트래킹' 시트 읽기
-                df = pd.read_excel(file, sheet_name='입찰트래킹', engine='openpyxl')
-                
-                # 업체명 추출
-                if '업체명' in df.columns:
-                    v_name = df['업체명'].iloc[0]
-                else:
-                    v_name = file.name.split('_')[0]
-
-                # 날짜 추출
-                matches = re.findall(r'(\d{4})', file.name)
-                date_str = matches[-1] if matches else file.name
-
-                # 상태별 집계
-                total_sku = len(df)
-                bad_df = df[df['가격현황'] == 'BAD'].copy()
-                best_df = df[df['가격현황'] == 'BEST PRICE'].copy()
-
-                bad_count = len(bad_df)
-                best_count = len(best_df)
-                best_ratio = (best_count / total_sku * 100) if total_sku > 0 else 0
-
-                trend_data.append({
-                    '날짜': str(date_str),
-                    '업체명': v_name,
-                    '총 SKU': total_sku,
-                    'BEST PRICE 비중(%)': round(best_ratio, 1),
-                    'BEST PRICE 개수': best_count,
-                    'BAD 개수': bad_count,
-                    'bad_df': bad_df
-                })
-            except Exception as e:
-                err_msg = str(e)
-                if "Worksheet named '입찰트래킹' not found" in err_msg:
-                    st.warning(f"⚠️ '{file.name}' 파일은 이전 버전 양식이거나 '입찰트래킹' 시트가 없어 제외되었습니다.")
-                else:
-                    st.error(f"❌ '{file.name}' 읽기 오류: {err_msg}")
-                continue
+        # 에러 또는 경고 메시지 화면 출력
+        for log in error_logs:
+            if log['type'] == 'warning':
+                st.warning(log['msg'])
+            else:
+                st.error(log['msg'])
 
         if trend_data:
             trend_df = pd.DataFrame(trend_data)
@@ -86,7 +107,7 @@ if uploaded_files:
             # ==========================================
             tab1, tab2 = st.tabs(["📈 시계열 트렌드 대시보드", "🚨 업체별 BAD 상품 개별 업데이트"])
 
-            # --- 탭 1: 트렌드 대시보드 (기존 유지) ---
+            # --- 탭 1: 트렌드 대시보드 ---
             with tab1:
                 st.subheader("🏢 업체별 BEST PRICE 점유율 변화 추이")
                 
@@ -106,7 +127,7 @@ if uploaded_files:
                 display_trend_df = trend_df[['날짜', '업체명', '총 SKU', 'BEST PRICE 개수', 'BEST PRICE 비중(%)', 'BAD 개수']]
                 st.dataframe(display_trend_df, use_container_width=True, hide_index=True)
 
-            # --- 탭 2: 완전히 새로워진 "업체별" 분리 화면 ---
+            # --- 탭 2: "업체별" 분리 화면 ---
             with tab2:
                 latest_date = trend_df['날짜'].max()
                 latest_subset = trend_df[trend_df['날짜'] == latest_date]
