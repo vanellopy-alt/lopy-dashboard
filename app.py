@@ -22,9 +22,20 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 🚀 데이터 캐싱 함수 (속도 최적화의 핵심!)
+# 🧹 사이드바: 메모리 관리 툴
 # ==========================================
-@st.cache_data(show_spinner=False)
+with st.sidebar:
+    st.markdown("### 🛠️ 시스템 관리")
+    st.markdown("서버가 느려지거나 에러가 나면 아래 버튼을 눌러주세요.")
+    if st.button("🧹 메모리 초기화 (캐시 비우기)"):
+        st.cache_data.clear()
+        st.success("메모리가 쾌적하게 초기화되었습니다!")
+
+# ==========================================
+# 🚀 데이터 캐싱 함수 (메모리 최적화 적용!)
+# ==========================================
+# 메모리 초과 방지: 최대 30개까지만 기억, 1시간(3600초) 지나면 자동 삭제
+@st.cache_data(max_entries=30, ttl=3600, show_spinner=False)
 def process_single_file(file_name, file_bytes):
     try:
         # 바이트 데이터를 엑셀로 읽기
@@ -49,6 +60,12 @@ def process_single_file(file_name, file_bytes):
         best_count = len(best_df)
         best_ratio = (best_count / total_sku * 100) if total_sku > 0 else 0
 
+        # 🔥 메모리 다이어트 (Memory Optimization)
+        # 50개가 넘는 전체 컬럼을 다 들고 있으면 메모리가 터집니다. 꼭 필요한 컬럼만 남기고 삭제합니다!
+        display_cols = ['상품ID', '옵션', '최저가', '판매입찰가', '희망조정가']
+        actual_cols = [c for c in display_cols if c in bad_df.columns]
+        bad_df_lite = bad_df[actual_cols].copy() # 엑셀 출력용 필수 데이터만 가벼운 형태로 복사
+
         return {
             '날짜': str(date_str),
             '업체명': v_name,
@@ -56,7 +73,7 @@ def process_single_file(file_name, file_bytes):
             'BEST PRICE 비중(%)': round(best_ratio, 1),
             'BEST PRICE 개수': best_count,
             'BAD 개수': bad_count,
-            'bad_df': bad_df
+            'bad_df': bad_df_lite  # 무거운 전체 데이터 대신 가벼운 데이터만 저장
         }, None
     except Exception as e:
         err_msg = str(e)
@@ -163,15 +180,15 @@ if uploaded_files:
                     # 토글 형태로 업체별 블록 생성 (BAD가 있는 업체만 기본으로 펼쳐놓음)
                     with st.expander(f"🏢 {vendor} (수정 필요: {v_bad_count:,}개)", expanded=(v_bad_count > 0)):
                         if v_bad_count > 0:
-                            display_cols = ['상품ID', '옵션', '최저가', '판매입찰가', '희망조정가']
-                            actual_cols = [c for c in display_cols if c in v_bad_df.columns]
+                            # 이미 핵심 컬럼만 남겨둔 bad_df_lite 상태이므로 그대로 사용합니다
+                            actual_cols = v_bad_df.columns.tolist()
 
                             # 🔥 핵심 속도 개선: 화면 표출은 무조건 상위 100개까지만! (브라우저 뻗음 방지)
                             st.markdown(f"<div class='preview-text'>👀 브라우저 속도를 위해 표에는 최대 100개까지만 미리보기로 표시됩니다. (전체 {v_bad_count:,}개는 아래 CSV로 다운로드)</div>", unsafe_allow_html=True)
-                            st.dataframe(v_bad_df[actual_cols].head(100), use_container_width=True, hide_index=True)
+                            st.dataframe(v_bad_df.head(100), use_container_width=True, hide_index=True)
 
                             # CSV에는 100개가 아니라 전체 데이터를 담아서 다운로드!
-                            csv_data = v_bad_df[actual_cols].to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
+                            csv_data = v_bad_df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
                             
                             st.download_button(
                                 label=f"📥 [{vendor}] 전체 {v_bad_count:,}개 가격 업데이트 CSV 다운로드",
