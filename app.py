@@ -56,11 +56,18 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("### 🔥 검색량 급등 매칭")
-    surged_input = st.text_area("급등 상품ID 리스트 입력", help="엑셀에서 복사한 상품ID들을 여기에 붙여넣으세요. (줄바꿈, 띄어쓰기, 쉼표 모두 인식합니다.)", height=120)
+    surged_input = st.text_area("급등 상품ID 리스트 입력", help="엑셀에서 복사한 상품ID들을 여기에 붙여넣으세요. (줄바꿈, 띄어쓰기, 쉼표 모두 인식합니다.)", height=100)
     # 정규식을 이용해 입력된 텍스트에서 상품ID 추출 (리스트 형태)
     surged_ids = [sid.strip() for sid in re.split(r'[\s,]+', surged_input) if sid.strip()]
     if surged_ids:
-        st.success(f"✅ {len(surged_ids)}개의 급등 상품ID가 대기 중입니다.")
+        st.success(f"✅ {len(surged_ids)}개의 급등 상품ID 대기 중")
+
+    st.markdown("---")
+    st.markdown("### 🎁 프로모션 상품 매칭")
+    promo_input = st.text_area("프로모션 상품ID 리스트 입력", help="이번 달 프로모션에 들어가는 상품ID들을 붙여넣으세요.", height=100)
+    promo_ids = [sid.strip() for sid in re.split(r'[\s,]+', promo_input) if sid.strip()]
+    if promo_ids:
+        st.success(f"✅ {len(promo_ids)}개의 프로모션 상품ID 대기 중")
 
     st.markdown("---")
     st.markdown("### 💾 자동 누적 데이터베이스")
@@ -251,23 +258,41 @@ with tab2:
                 with st.expander(f"🏢 {vendor} (수정 필요: {v_bad_count:,}개)", expanded=(v_bad_count > 0)):
                     if v_bad_count > 0:
                         
-                        # 🔥 검색량 급등 상품 매칭 로직 (선택한 언어에 맞춰 내용 변경)
+                        # 🔥 검색량 급등 & 🎁 프로모션 상품 매칭 로직
                         surge_tag = '🔥KREAM 流量黑马' if header_lang == "중국어 (번역)" else '🔥급등'
+                        promo_tag = '🎁促销活动商品' if header_lang == "중국어 (번역)" else '🎁프로모션 진행상품'
 
-                        if surged_ids:
-                            # 상품ID 비교를 위해 문자열로 통일
-                            v_bad_df['비고'] = v_bad_df['상품ID'].astype(str).apply(
-                                lambda x: surge_tag if x in surged_ids else ''
-                            )
+                        if surged_ids or promo_ids:
+                            # 상품ID 비교 및 여러 조건 해당 시 태그 결합을 위한 함수
+                            def get_remark(item_id):
+                                remarks = []
+                                item_str = str(item_id)
+                                if surged_ids and item_str in surged_ids:
+                                    remarks.append(surge_tag)
+                                if promo_ids and item_str in promo_ids:
+                                    remarks.append(promo_tag)
+                                return ' / '.join(remarks) # 둘 다 해당되면 '🔥KREAM 流量黑马 / 🎁促销活动商品' 형태로 출력
+                                
+                            v_bad_df['비고'] = v_bad_df['상품ID'].apply(get_remark)
                             
-                            # ✨ 정렬 로직: 매칭된 행을 무조건 가장 위로 올림 (내림차순 정렬)
-                            v_bad_df.sort_values(by='비고', ascending=False, inplace=True)
+                            # ✨ 정렬 로직: 내용이 있는 행을 가장 위로 올림 (비어있지 않으면 1, 비어있으면 0으로 가중치 부여 후 정렬)
+                            v_bad_df['sort_weight'] = v_bad_df['비고'].apply(lambda x: 1 if x != '' else 0)
+                            v_bad_df.sort_values(by=['sort_weight', '비고'], ascending=[False, False], inplace=True)
+                            v_bad_df.drop(columns=['sort_weight'], inplace=True)
                             
-                            match_count = len(v_bad_df[v_bad_df['비고'] == surge_tag])
-                            if match_count > 0:
-                                st.markdown(f"<span class='highlight-text'>💡 급등 상품 매칭 성공: {match_count}건 발견! (목록 최상단으로 정렬됨)</span>", unsafe_allow_html=True)
+                            surge_match_count = len(v_bad_df[v_bad_df['비고'].str.contains(surge_tag, na=False)])
+                            promo_match_count = len(v_bad_df[v_bad_df['비고'].str.contains(promo_tag, na=False)])
+                            
+                            if surge_match_count > 0 or promo_match_count > 0:
+                                msg = "<span class='highlight-text'>💡 매칭 성공: "
+                                if surge_match_count > 0:
+                                    msg += f"급등 {surge_match_count}건 "
+                                if promo_match_count > 0:
+                                    msg += f"프로모션 {promo_match_count}건 "
+                                msg += "발견! (목록 최상단으로 정렬됨)</span>"
+                                st.markdown(msg, unsafe_allow_html=True)
                         else:
-                            # 급등 리스트가 없어도 다운로드 시 에러 방지를 위해 빈 비고란 생성
+                            # 둘 다 리스트가 없어도 다운로드 시 에러 방지를 위해 빈 비고란 생성
                             v_bad_df['비고'] = ''
 
                         st.markdown(f"<div class='preview-text'>👀 브라우저 속도를 위해 표에는 최대 100개까지만 미리보기로 표시됩니다. (전체 {v_bad_count:,}개는 아래 CSV로 다운로드)</div>", unsafe_allow_html=True)
