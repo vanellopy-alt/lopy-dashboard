@@ -251,17 +251,19 @@ with tab2:
                 with st.expander(f"🏢 {vendor} (수정 필요: {v_bad_count:,}개)", expanded=(v_bad_count > 0)):
                     if v_bad_count > 0:
                         
-                        # 🔥 검색량 급등 상품 매칭 로직 (화면에서부터 KREAM 문구 반영되도록 수정)
+                        # 🔥 검색량 급등 상품 매칭 로직 (선택한 언어에 맞춰 내용 변경)
+                        surge_tag = '🔥KREAM 流量黑马' if header_lang == "중국어 (번역)" else '🔥급등'
+
                         if surged_ids:
                             # 상품ID 비교를 위해 문자열로 통일
                             v_bad_df['비고'] = v_bad_df['상품ID'].astype(str).apply(
-                                lambda x: '🔥KREAM 流量黑马' if x in surged_ids else ''
+                                lambda x: surge_tag if x in surged_ids else ''
                             )
                             
                             # ✨ 정렬 로직: 매칭된 행을 무조건 가장 위로 올림 (내림차순 정렬)
                             v_bad_df.sort_values(by='비고', ascending=False, inplace=True)
                             
-                            match_count = len(v_bad_df[v_bad_df['비고'] == '🔥KREAM 流量黑马'])
+                            match_count = len(v_bad_df[v_bad_df['비고'] == surge_tag])
                             if match_count > 0:
                                 st.markdown(f"<span class='highlight-text'>💡 급등 상품 매칭 성공: {match_count}건 발견! (목록 최상단으로 정렬됨)</span>", unsafe_allow_html=True)
                         else:
