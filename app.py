@@ -256,9 +256,13 @@ with tab2:
                             v_bad_df['비고'] = v_bad_df['상품ID'].astype(str).apply(
                                 lambda x: '🔥급등' if x in surged_ids else ''
                             )
+                            
+                            # ✨ 정렬 로직: '🔥급등'이 있는 행을 무조건 가장 위로 올림 (내림차순 정렬)
+                            v_bad_df.sort_values(by='비고', ascending=False, inplace=True)
+                            
                             match_count = len(v_bad_df[v_bad_df['비고'] == '🔥급등'])
                             if match_count > 0:
-                                st.markdown(f"<span class='highlight-text'>💡 급등 상품 매칭 성공: {match_count}건 발견!</span>", unsafe_allow_html=True)
+                                st.markdown(f"<span class='highlight-text'>💡 급등 상품 매칭 성공: {match_count}건 발견! (목록 최상단으로 정렬됨)</span>", unsafe_allow_html=True)
                         else:
                             # 급등 리스트가 없어도 다운로드 시 에러 방지를 위해 빈 비고란 생성
                             v_bad_df['비고'] = ''
@@ -272,6 +276,9 @@ with tab2:
                         download_df = v_bad_df.copy()
                         if header_lang == "중국어 (번역)":
                             download_df.rename(columns=CN_HEADERS, inplace=True)
+                            # ✨ 내용 번역: '비고'(备注) 열의 '🔥급등'을 '🔥KREAM 流量黑马'로 변경
+                            if '备注' in download_df.columns:
+                                download_df['备注'] = download_df['备注'].replace('🔥급등', '🔥KREAM 流量黑马')
 
                         csv_data = download_df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
                         
