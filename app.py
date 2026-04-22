@@ -51,7 +51,8 @@ def save_db(df):
 # ==========================================
 with st.sidebar:
     st.markdown("### 🌐 CSV 다운로드 언어 설정")
-    header_lang = st.radio("다운로드 파일의 열 제목 언어", ["한국어 (기본)", "중국어 (번역)"], help="중국어 선택 시 다운로드되는 CSV의 헤더가 자동으로 중국어로 변경됩니다.")
+    # ✨ 매번 누르지 않도록 '중국어'를 기본값으로 변경
+    header_lang = st.radio("다운로드 파일의 열 제목 언어", ["중국어 (번역)", "한국어 (기본)"], help="중국어 선택 시 다운로드되는 CSV의 헤더가 자동으로 중국어로 변경됩니다.")
 
     st.markdown("---")
     st.markdown("### 🔥 검색량 급등 매칭")
@@ -250,17 +251,17 @@ with tab2:
                 with st.expander(f"🏢 {vendor} (수정 필요: {v_bad_count:,}개)", expanded=(v_bad_count > 0)):
                     if v_bad_count > 0:
                         
-                        # 🔥 검색량 급등 상품 매칭 로직
+                        # 🔥 검색량 급등 상품 매칭 로직 (화면에서부터 KREAM 문구 반영되도록 수정)
                         if surged_ids:
                             # 상품ID 비교를 위해 문자열로 통일
                             v_bad_df['비고'] = v_bad_df['상품ID'].astype(str).apply(
-                                lambda x: '🔥급등' if x in surged_ids else ''
+                                lambda x: '🔥KREAM 流量黑马' if x in surged_ids else ''
                             )
                             
-                            # ✨ 정렬 로직: '🔥급등'이 있는 행을 무조건 가장 위로 올림 (내림차순 정렬)
+                            # ✨ 정렬 로직: 매칭된 행을 무조건 가장 위로 올림 (내림차순 정렬)
                             v_bad_df.sort_values(by='비고', ascending=False, inplace=True)
                             
-                            match_count = len(v_bad_df[v_bad_df['비고'] == '🔥급등'])
+                            match_count = len(v_bad_df[v_bad_df['비고'] == '🔥KREAM 流量黑马'])
                             if match_count > 0:
                                 st.markdown(f"<span class='highlight-text'>💡 급등 상품 매칭 성공: {match_count}건 발견! (목록 최상단으로 정렬됨)</span>", unsafe_allow_html=True)
                         else:
@@ -269,18 +270,15 @@ with tab2:
 
                         st.markdown(f"<div class='preview-text'>👀 브라우저 속도를 위해 표에는 최대 100개까지만 미리보기로 표시됩니다. (전체 {v_bad_count:,}개는 아래 CSV로 다운로드)</div>", unsafe_allow_html=True)
                         
-                        # 화면에는 한국어 표기로 데이터프레임 출력
-                        st.dataframe(v_bad_df.head(100), use_container_width=True, hide_index=True)
-
-                        # 🌐 다운로드용 데이터 복사본 생성 및 언어 적용
-                        download_df = v_bad_df.copy()
+                        # 🌐 화면 표시 및 다운로드용 데이터 생성 및 언어 적용
+                        display_df = v_bad_df.copy()
                         if header_lang == "중국어 (번역)":
-                            download_df.rename(columns=CN_HEADERS, inplace=True)
-                            # ✨ 내용 번역: '비고'(备注) 열의 '🔥급등'을 '🔥KREAM 流量黑马'로 변경
-                            if '备注' in download_df.columns:
-                                download_df['备注'] = download_df['备注'].replace('🔥급등', '🔥KREAM 流量黑马')
+                            display_df.rename(columns=CN_HEADERS, inplace=True)
 
-                        csv_data = download_df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
+                        # 화면 표에도 선택한 언어(중국어/한국어) 즉각 반영하여 출력
+                        st.dataframe(display_df.head(100), use_container_width=True, hide_index=True)
+
+                        csv_data = display_df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
                         
                         btn_label = f"📥 [{vendor}] 전체 {v_bad_count:,}개 다운로드"
                         if header_lang == "중국어 (번역)":
