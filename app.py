@@ -50,14 +50,12 @@ def save_db(df):
 # 🧹 사이드바: DB, 메모리 관리 및 확장 기능 툴
 # ==========================================
 with st.sidebar:
-    st.markdown("### 🌐 CSV 다운로드 언어 설정")
-    # ✨ 매번 누르지 않도록 '중국어'를 기본값으로 변경
-    header_lang = st.radio("다운로드 파일의 열 제목 언어", ["중국어 (번역)", "한국어 (기본)"], help="중국어 선택 시 다운로드되는 CSV의 헤더가 자동으로 중국어로 변경됩니다.")
+    st.markdown("### 🌐 다운로드 언어 설정")
+    header_lang = st.radio("다운로드 파일의 열 제목 언어", ["중국어 (번역)", "한국어 (기본)"], help="중국어 선택 시 다운로드되는 엑셀 파일의 헤더가 자동으로 중국어로 변경됩니다.")
 
     st.markdown("---")
     st.markdown("### 🔥 검색량 급등 매칭")
     surged_input = st.text_area("급등 상품ID 리스트 입력", help="엑셀에서 복사한 상품ID들을 여기에 붙여넣으세요. (줄바꿈, 띄어쓰기, 쉼표 모두 인식합니다.)", height=100)
-    # 정규식을 이용해 입력된 텍스트에서 상품ID 추출 (리스트 형태)
     surged_ids = [sid.strip() for sid in re.split(r'[\s,]+', surged_input) if sid.strip()]
     if surged_ids:
         st.success(f"✅ {len(surged_ids)}개의 급등 상품ID 대기 중")
@@ -75,9 +73,10 @@ with st.sidebar:
     st.info(f"📊 현재 누적된 트렌드 데이터: **{len(current_db)}건**")
 
     if not current_db.empty:
+        # DB 백업은 호환성을 위해 CSV 유지
         csv_backup = current_db.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
         st.download_button(
-            label="⬇️ 누적 DB 백업 다운로드",
+            label="⬇️ 누적 DB 백업 다운로드 (.csv)",
             data=csv_backup,
             file_name="lopy_trend_db_backup.csv",
             mime="text/csv",
@@ -143,6 +142,15 @@ def process_single_file(file_name, file_bytes):
         else:
             return None, {'type': 'error', 'msg': f"❌ '{file_name}' 읽기 오류: {err_msg}"}
 
+# ==========================================
+# 엑셀 변환 헬퍼 함수
+# ==========================================
+def to_excel(df):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Sheet1')
+    return output.getvalue()
+
 
 # ==========================================
 # 🤖 앱 헤더
@@ -170,11 +178,8 @@ if uploaded_files:
         
         data, error = process_single_file(file.name, file.getvalue())
         if data:
-            # 트렌드 기록용 데이터 (bad_df 제외)
             trend_row = {k: v for k, v in data.items() if k != 'bad_df'}
             new_trend_data.append(trend_row)
-            
-            # 오늘자 업데이트 리스트용 데이터 (bad_df 포함)
             today_bad_data.append(data)
             
         if error:
@@ -188,16 +193,14 @@ if uploaded_files:
         else:
             st.error(log['msg'])
 
-    # 🔥 새로 업로드된 데이터를 누적 DB에 병합하여 저장
     if new_trend_data:
         new_df = pd.DataFrame(new_trend_data)
         db_df = load_db()
         
-        # 날짜와 업체명이 겹치면 최신 데이터(방금 올린 파일)로 덮어쓰기
         combined_df = pd.concat([db_df, new_df]).drop_duplicates(subset=['날짜', '업체명'], keep='last')
         combined_df = combined_df.sort_values(['날짜', '업체명'])
         
-        save_db(combined_df) # DB 파일 갱신
+        save_db(combined_df)
 
 # ==========================================
 # 🗂️ 탭 화면 구성
@@ -243,7 +246,7 @@ with tab2:
             <div class="bot-box">
                 <span class="big-font">🤖 봇의 브리핑:</span><br>
                 방금 업로드하신 파일 기준으로 총 <span class="bad-text">{total_today_bad:,}개</span>의 상품이 최저가를 뺏겼습니다.<br>
-                아래에서 <b>각 업체별로 분리된 리스트를 확인하고 개별 CSV를 다운로드</b> 하세요!
+                아래에서 <b>각 업체별로 분리된 리스트를 확인하고 개별 엑셀 파일을 다운로드</b> 하세요!
             </div>
             ''', unsafe_allow_html=True)
 
@@ -251,19 +254,16 @@ with tab2:
                 vendor = item['업체명']
                 v_bad_count = item['BAD 개수']
                 
-                # 기존 DataFrame 보호를 위해 복사본 사용
                 v_bad_df = item['bad_df'].copy() 
                 latest_date = item['날짜']
 
                 with st.expander(f"🏢 {vendor} (수정 필요: {v_bad_count:,}개)", expanded=(v_bad_count > 0)):
                     if v_bad_count > 0:
                         
-                        # 🔥 검색량 급등 & 🎁 프로모션 상품 매칭 로직
                         surge_tag = '🔥KREAM 流量黑马' if header_lang == "중국어 (번역)" else '🔥급등'
                         promo_tag = '🎁促销活动商品' if header_lang == "중국어 (번역)" else '🎁프로모션 진행상품'
 
                         if surged_ids or promo_ids:
-                            # 상품ID 비교 및 여러 조건 해당 시 태그 결합을 위한 함수
                             def get_remark(item_id):
                                 remarks = []
                                 item_str = str(item_id)
@@ -271,11 +271,10 @@ with tab2:
                                     remarks.append(surge_tag)
                                 if promo_ids and item_str in promo_ids:
                                     remarks.append(promo_tag)
-                                return ' / '.join(remarks) # 둘 다 해당되면 '🔥KREAM 流量黑马 / 🎁促销活动商品' 형태로 출력
+                                return ' / '.join(remarks)
                                 
                             v_bad_df['비고'] = v_bad_df['상품ID'].apply(get_remark)
                             
-                            # ✨ 정렬 로직: 내용이 있는 행을 가장 위로 올림 (비어있지 않으면 1, 비어있으면 0으로 가중치 부여 후 정렬)
                             v_bad_df['sort_weight'] = v_bad_df['비고'].apply(lambda x: 1 if x != '' else 0)
                             v_bad_df.sort_values(by=['sort_weight', '비고'], ascending=[False, False], inplace=True)
                             v_bad_df.drop(columns=['sort_weight'], inplace=True)
@@ -292,30 +291,28 @@ with tab2:
                                 msg += "발견! (목록 최상단으로 정렬됨)</span>"
                                 st.markdown(msg, unsafe_allow_html=True)
                         else:
-                            # 둘 다 리스트가 없어도 다운로드 시 에러 방지를 위해 빈 비고란 생성
                             v_bad_df['비고'] = ''
 
-                        st.markdown(f"<div class='preview-text'>👀 브라우저 속도를 위해 표에는 최대 100개까지만 미리보기로 표시됩니다. (전체 {v_bad_count:,}개는 아래 CSV로 다운로드)</div>", unsafe_allow_html=True)
+                        st.markdown(f"<div class='preview-text'>👀 브라우저 속도를 위해 표에는 최대 100개까지만 미리보기로 표시됩니다. (전체 {v_bad_count:,}개는 아래 엑셀로 다운로드)</div>", unsafe_allow_html=True)
                         
-                        # 🌐 화면 표시 및 다운로드용 데이터 생성 및 언어 적용
                         display_df = v_bad_df.copy()
                         if header_lang == "중국어 (번역)":
                             display_df.rename(columns=CN_HEADERS, inplace=True)
 
-                        # 화면 표에도 선택한 언어(중국어/한국어) 즉각 반영하여 출력
                         st.dataframe(display_df.head(100), use_container_width=True, hide_index=True)
 
-                        csv_data = display_df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
+                        # ✨ 엑셀 변환 함수 사용
+                        excel_data = to_excel(display_df)
                         
-                        btn_label = f"📥 [{vendor}] 전체 {v_bad_count:,}개 다운로드"
+                        btn_label = f"📥 [{vendor}] 전체 {v_bad_count:,}개 다운로드 (.xlsx)"
                         if header_lang == "중국어 (번역)":
                             btn_label += " (🇨🇳중국어 양식)"
 
                         st.download_button(
                             label=btn_label,
-                            data=csv_data,
-                            file_name=f"{vendor}_{latest_date}_업데이트.csv",
-                            mime="text/csv",
+                            data=excel_data,
+                            file_name=f"{vendor}_{latest_date}_업데이트.xlsx", # 파일 확장자를 xlsx로 변경
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", # 엑셀 MIME 타입으로 변경
                             type="primary",
                             key=f"btn_{vendor}_{latest_date}_{v_bad_count}"
                         )
