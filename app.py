@@ -146,12 +146,19 @@ def process_single_file(file_name, file_bytes):
         v_name = None
         vendor_col = None
         for c in df.columns:
-            if '업체명' in c or '업체' in c:
+            # 단순 '업체'가 아닌 '업체명' 열을 타겟팅하여 잘못된 코드/인덱스 매칭 방지
+            if '업체명' in c:
                 vendor_col = c
                 break
                 
         if vendor_col and len(df) > 0:
-            v_name = normalize_text(str(df[vendor_col].iloc[0]))
+            val = str(df[vendor_col].iloc[0]).strip()
+            if val and val.lower() != 'nan':
+                v_name = normalize_text(val)
+
+        # 추출한 업체명이 숫자로만 되어 있거나 길이가 1자 이하(예: '1', '2')인 경우는 잘못 매핑된 것으로 간주하고 초기화
+        if v_name and (v_name.isdigit() or len(v_name) <= 1):
+            v_name = None
 
         # 업체명 열이 없거나 내용이 비어있다면 파일명에서 스마트 분석 (바잉로그 0401 등 대응)
         if not v_name or v_name == 'nan' or v_name == '':
