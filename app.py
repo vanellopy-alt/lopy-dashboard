@@ -390,7 +390,6 @@ with tab2:
                         excel_data = to_excel(display_df)
                         
                         btn_label = f"📥 [{vendor}] 전체 {v_bad_count:,}개 다운로드 (.xlsx)"
-                        if header_lang == "중국어 (번역)" else f"📥 [{vendor}] 전체 {v_bad_count:,}개 다운로드 (.xlsx)"
                         if header_lang == "중국어 (번역)":
                             btn_label += " (🇨🇳중국어 양식)"
 
