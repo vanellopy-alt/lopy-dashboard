@@ -4,6 +4,7 @@ import plotly.express as px
 import re
 import io
 import os
+import unicodedata
 
 # ==========================================
 # ⚙️ 페이지 기본 설정
@@ -46,6 +47,12 @@ def load_db():
 def save_db(df):
     df.to_csv(DB_FILE, index=False, encoding='utf-8-sig')
 
+def normalize_text(text):
+    """맥과 윈도우 사이의 한글 자모 분리 및 문자열 정제를 처리합니다."""
+    if not isinstance(text, str):
+        return text
+    return unicodedata.normalize('NFC', text).strip()
+
 # ==========================================
 # 🧹 사이드바: DB, 메모리 관리 및 확장 기능 툴
 # ==========================================
@@ -73,7 +80,6 @@ with st.sidebar:
     st.info(f"📊 현재 누적된 트렌드 데이터: **{len(current_db)}건**")
 
     if not current_db.empty:
-        # DB 백업은 호환성을 위해 CSV 유지
         csv_backup = current_db.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
         st.download_button(
             label="⬇️ 누적 DB 백업 다운로드 (.csv)",
@@ -103,28 +109,111 @@ with st.sidebar:
         st.success("DB가 초기화되었습니다! 새로고침 해주세요.")
 
 # ==========================================
-# 🚀 데이터 분석 함수 (메모리 최적화 유지)
+# 🚀 스마트 데이터 분석 함수 (유연한 시트명/열이름/업체명 감지)
 # ==========================================
 @st.cache_data(max_entries=30, ttl=3600, show_spinner=False)
 def process_single_file(file_name, file_bytes):
     try:
-        df = pd.read_excel(io.BytesIO(file_bytes), sheet_name='입찰트래킹', engine='openpyxl')
+        # ExcelFile 객체로 시트 목록 분석
+        xls = pd.ExcelFile(io.BytesIO(file_bytes), engine='openpyxl')
         
-        v_name = df['업체명'].iloc[0] if '업체명' in df.columns else file_name.split('_')[0]
+        # 1. 시트명 탐색 고도화 ('입찰트래킹' 또는 '트래킹', '입찰' 키워드 매칭)
+        target_sheet = None
+        for s in xls.sheet_names:
+            s_norm = normalize_text(s)
+            if s_norm == '입찰트래킹':
+                target_sheet = s
+                break
+        
+        if not target_sheet:
+            for s in xls.sheet_names:
+                s_norm = normalize_text(s)
+                if '트래킹' in s_norm or '입찰' in s_norm:
+                    target_sheet = s
+                    break
+                    
+        # 그래도 못 찾으면 첫 번째 시트 사용 (바잉로그 등 기본 시트 호환)
+        if not target_sheet and xls.sheet_names:
+            target_sheet = xls.sheet_names[0]
+            
+        if not target_sheet:
+            return None, {'type': 'error', 'msg': f"❌ '{file_name}' 파일에 시트가 존재하지 않습니다."}
+            
+        df = pd.read_excel(xls, sheet_name=target_sheet)
+        df.columns = [normalize_text(str(c)) for c in df.columns]
+
+        # 2. 업체명(v_name) 추출 기법 고도화
+        v_name = None
+        vendor_col = None
+        for c in df.columns:
+            if '업체명' in c or '업체' in c:
+                vendor_col = c
+                break
+                
+        if vendor_col and len(df) > 0:
+            v_name = normalize_text(str(df[vendor_col].iloc[0]))
+
+        # 업체명 열이 없거나 내용이 비어있다면 파일명에서 스마트 분석 (바잉로그 0401 등 대응)
+        if not v_name or v_name == 'nan' or v_name == '':
+            clean_file_name = normalize_text(os.path.splitext(file_name)[0])
+            tokens = re.split(r'[\s_,\-\[\]\(\)]+', clean_file_name)
+            for t in tokens:
+                if t and not t.isdigit() and not any(k in t.upper() for k in ['KREAM', 'DAILY', 'REPORT', '트래킹', '입찰', '가격방어', '결과', '업데이트']):
+                    v_name = t
+                    break
+            if not v_name:
+                v_name = clean_file_name
+
+        # 3. 날짜 추출 (가장 마지막의 4자리 숫자 확보)
         matches = re.findall(r'(\d{4})', file_name)
-        date_str = matches[-1] if matches else file_name
+        date_str = matches[-1] if matches else None
+        if not date_str:
+            num_match = re.findall(r'\d+', file_name)
+            date_str = "".join(num_match) if num_match else "오늘"
+
+        # 4. 가격 현황 열 탐색 고도화 ('가격현황', '현황', '상태' 유연 대응)
+        status_col = None
+        for c in df.columns:
+            if any(k in c.replace(" ", "") for k in ['가격현황', '현황', '가격상태', '상태']):
+                status_col = c
+                break
+                
+        if not status_col:
+            return None, {'type': 'warning', 'msg': f"⚠️ '{file_name}' 파일에 '가격현황' 상태 열이 존재하지 않습니다."}
 
         total_sku = len(df)
-        bad_df = df[df['가격현황'] == 'BAD'].copy()
-        best_df = df[df['가격현황'] == 'BEST PRICE'].copy()
+        
+        # 'BAD'와 'BEST PRICE' 매칭 시 공백/대소문자 차이 제거
+        status_series = df[status_col].astype(str).str.strip().str.upper()
+        
+        bad_df = df[status_series == 'BAD'].copy()
+        best_df = df[status_series.isin(['BEST PRICE', 'BESTPRICE'])].copy()
 
         bad_count = len(bad_df)
         best_count = len(best_df)
         best_ratio = (best_count / total_sku * 100) if total_sku > 0 else 0
 
-        display_cols = ['상품ID', '옵션', '최저가', '판매입찰가', '희망조정가']
-        actual_cols = [c for c in display_cols if c in bad_df.columns]
-        bad_df_lite = bad_df[actual_cols].copy() 
+        # 5. 열 이름 유연성 보정 (상품ID, 옵션, 최저가, 판매입찰가, 희망조정가)
+        col_keywords = {
+            '상품ID': ['상품ID', '상품 ID', '아이디', 'ID'],
+            '옵션': ['옵션', '옵션명', '사이즈', 'SIZE'],
+            '최저가': ['최저가', '최저 가격', '최저', '최저가(원)'],
+            '판매입찰가': ['판매입찰가', '판매 입찰가', '입찰가', '판매가'],
+            '희망조정가': ['희망조정가', '희망 조정가', '희망가', '조정가']
+        }
+        
+        bad_df_lite = pd.DataFrame()
+        for target_key, keywords in col_keywords.items():
+            actual_col = None
+            for col in df.columns:
+                if any(k.upper().replace(" ", "") in col.upper().replace(" ", "") for k in keywords):
+                    actual_col = col
+                    break
+            
+            if actual_col and actual_col in bad_df.columns:
+                bad_df_lite[target_key] = bad_df[actual_col]
+            else:
+                bad_df_lite[target_key] = "" # 없는 열은 비워서 호환성 유지
 
         return {
             '날짜': str(date_str),
@@ -137,10 +226,7 @@ def process_single_file(file_name, file_bytes):
         }, None
     except Exception as e:
         err_msg = str(e)
-        if "Worksheet named '입찰트래킹' not found" in err_msg:
-            return None, {'type': 'warning', 'msg': f"⚠️ '{file_name}' 파일은 이전 양식이거나 '입찰트래킹' 시트가 없습니다."}
-        else:
-            return None, {'type': 'error', 'msg': f"❌ '{file_name}' 읽기 오류: {err_msg}"}
+        return None, {'type': 'error', 'msg': f"❌ '{file_name}' 분석 중 뜻밖의 문제 발생: {err_msg}"}
 
 # ==========================================
 # 엑셀 변환 헬퍼 함수
@@ -266,7 +352,7 @@ with tab2:
                         if surged_ids or promo_ids:
                             def get_remark(item_id):
                                 remarks = []
-                                item_str = str(item_id)
+                                item_str = str(item_id).strip()
                                 if surged_ids and item_str in surged_ids:
                                     remarks.append(surge_tag)
                                 if promo_ids and item_str in promo_ids:
@@ -301,18 +387,18 @@ with tab2:
 
                         st.dataframe(display_df.head(100), use_container_width=True, hide_index=True)
 
-                        # ✨ 엑셀 변환 함수 사용
                         excel_data = to_excel(display_df)
                         
                         btn_label = f"📥 [{vendor}] 전체 {v_bad_count:,}개 다운로드 (.xlsx)"
+                        if header_lang == "중국어 (번역)" else f"📥 [{vendor}] 전체 {v_bad_count:,}개 다운로드 (.xlsx)"
                         if header_lang == "중국어 (번역)":
                             btn_label += " (🇨🇳중국어 양식)"
 
                         st.download_button(
                             label=btn_label,
                             data=excel_data,
-                            file_name=f"{vendor}_{latest_date}_업데이트.xlsx", # 파일 확장자를 xlsx로 변경
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", # 엑셀 MIME 타입으로 변경
+                            file_name=f"{vendor}_{latest_date}_업데이트.xlsx", 
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
                             type="primary",
                             key=f"btn_{vendor}_{latest_date}_{v_bad_count}"
                         )
