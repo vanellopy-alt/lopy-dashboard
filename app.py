@@ -23,6 +23,20 @@ CN_HEADERS = {
     '비고': '备注'
 }
 
+# 영문 업체명 치환 매핑 사전
+VENDOR_MAP = {
+    '에이티밍 유한회사': 'ATIMING',
+    '에이티밍': 'ATIMING',
+    '리얼릭스 유한회사': 'Reallix',
+    '리얼릭스': 'Reallix',
+    '유한회사 도카이상사': 'Haiyun',
+    '도카이상사': 'Haiyun',
+    '도카이': 'Haiyun',
+    '주식회사 클러치테크': 'Dingstock',
+    '클러치테크': 'Dingstock',
+    '클러치': 'Dingstock'
+}
+
 # ==========================================
 # 🎨 커스텀 CSS
 # ==========================================
@@ -350,6 +364,13 @@ with tab2:
                 v_bad_df = item['bad_df'].copy() 
                 latest_date = item['날짜']
 
+                # 영문 업체명 매핑 처리 (사전에 일치하는 한글 키워드가 있으면 영문으로 전환)
+                mapped_vendor = vendor
+                for kr_key, eng_val in VENDOR_MAP.items():
+                    if kr_key in vendor:
+                        mapped_vendor = eng_val
+                        break
+
                 with st.expander(f"🏢 {vendor} (수정 필요: {v_bad_count:,}개)", expanded=(v_bad_count > 0)):
                     if v_bad_count > 0:
                         
@@ -403,7 +424,8 @@ with tab2:
                         st.download_button(
                             label=btn_label,
                             data=excel_data,
-                            file_name=f"{vendor}_{latest_date}_업데이트.xlsx", 
+                            # 다운로드 파일명을 DINGSTOCK_0608_Bad Only.xlsx 형태로 직관적으로 치환
+                            file_name=f"{mapped_vendor}_{latest_date}_Bad Only.xlsx", 
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
                             type="primary",
                             key=f"btn_{vendor}_{latest_date}_{v_bad_count}"
