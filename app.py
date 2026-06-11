@@ -1,4 +1,3 @@
-야 이거 너가 만들어준 코드인데 최저가 파일을 넣으면 주차별로 누적되게끔 만들어주는 그런 거는 못하나 ??
 import streamlit as st
 import pandas as pd
 import plotly.express as px
