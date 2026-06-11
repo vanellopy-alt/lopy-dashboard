@@ -4,7 +4,11 @@ import plotly.express as px
 import re
 import io
 import os
+import datetime
+import json
 import unicodedata
+from google.cloud import firestore
+from google.oauth2 import service_account
 
 # ==========================================
 # ⚙️ 페이지 기본 설정
@@ -12,6 +16,7 @@ import unicodedata
 st.set_page_config(page_title="LOPY 트렌드 & 가격방어 봇", page_icon="📈", layout="wide")
 
 DB_FILE = "lopy_trend_db.csv"
+APP_ID = "lopy-trend-dashboard" # 클라우드 데이터 구분용 ID
 
 # 중국어 번역 매핑 딕셔너리
 CN_HEADERS = {
@@ -51,14 +56,65 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
+# ☁️ 클라우드 DB 연결 (Firestore)
+# ==========================================
+@st.cache_resource
+def get_db_client():
+    """Streamlit Secrets에 저장소 계정 정보가 있다면 안전하게 연결합니다."""
+    if "gcp_service_account" in st.secrets:
+        try:
+            key_dict = dict(st.secrets["gcp_service_account"])
+            # 프라이빗 키에 포함된 이스케이프 문자 복원
+            if "private_key" in key_dict:
+                key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
+            creds = service_account.Credentials.from_service_account_info(key_dict)
+            return firestore.Client(credentials=creds, project=key_dict["project_id"])
+        except Exception as e:
+            st.sidebar.error(f"⚠️ 클라우드 데이터 연결 오류: {e}")
+    return None
+
+# ==========================================
 # 💾 데이터베이스(DB) 로드 및 저장 함수
 # ==========================================
 def load_db():
+    db = get_db_client()
+    if db:
+        try:
+            docs = db.collection("artifacts").document(APP_ID).collection("public").document("data").collection("lopy_trend").stream()
+            data = []
+            for doc in docs:
+                data.append(doc.to_dict())
+            if data:
+                df = pd.DataFrame(data)
+                df['날짜'] = df['날짜'].astype(str)
+                return df
+        except Exception as e:
+            st.sidebar.error(f"⚠️ 클라우드 로드 실패 (로컬 DB 대체): {e}")
+            
+    # 클라우드 비활성화 상태거나 연결 실패 시 로컬 CSV 파일로 작동
     if os.path.exists(DB_FILE):
-        return pd.read_csv(DB_FILE, dtype={'날짜': str}) # 날짜 앞의 0이 사라지지 않게 문자열로 읽기
+        return pd.read_csv(DB_FILE, dtype={'날짜': str})
     return pd.DataFrame(columns=['날짜', '업체명', '총 SKU', 'BEST PRICE 비중(%)', 'BEST PRICE 개수', 'BAD 개수'])
 
 def save_db(df):
+    db = get_db_client()
+    if db:
+        try:
+            for _, row in df.iterrows():
+                doc_id = f"{row['날짜']}_{row['업체명']}"
+                doc_ref = db.collection("artifacts").document(APP_ID).collection("public").document("data").collection("lopy_trend").document(doc_id)
+                doc_ref.set({
+                    '날짜': str(row['날짜']),
+                    '업체명': str(row['업체명']),
+                    '총 SKU': int(row['총 SKU']),
+                    'BEST PRICE 비중(%)': float(row['BEST PRICE 비중(%)']),
+                    'BEST PRICE 개수': int(row['BEST PRICE 개수']),
+                    'BAD 개수': int(row['BAD 개수'])
+                })
+            return
+        except Exception as e:
+            st.sidebar.error(f"⚠️ 클라우드 저장 실패: {e}")
+            
     df.to_csv(DB_FILE, index=False, encoding='utf-8-sig')
 
 def normalize_text(text):
@@ -67,12 +123,81 @@ def normalize_text(text):
         return text
     return unicodedata.normalize('NFC', text).strip()
 
+def get_week_info(date_str):
+    """날짜 문자열(MMDD)을 기반으로 정렬용 ISO 주차 및 시각용 주차명을 구합니다."""
+    try:
+        date_str = str(date_str).strip()
+        if len(date_str) == 4 and date_str.isdigit():
+            month = int(date_str[:2])
+            day = int(date_str[2:])
+            # 2026년 기준 날짜 생성 (정밀 계산용)
+            dt = datetime.date(2026, month, day)
+            # 해당 월의 몇 번째 주인지 단순 수식 계산
+            week_of_month = (day - 1) // 7 + 1
+            iso_week = dt.isocalendar()[1]
+            # 정렬 순서를 유지하기 위해 'W23 (6월 2주차)' 형태로 빌드
+            return f"W{iso_week:02d} ({month}월 {week_of_month}주차)", iso_week
+        return "기타", 999
+    except:
+        return "기타", 999
+
 # ==========================================
 # 🧹 사이드바: DB, 메모리 관리 및 확장 기능 툴
 # ==========================================
 with st.sidebar:
+    # ☁️ 클라우드 연결 상태에 따른 사이드바 알림창
+    db_client = get_db_client()
+    if not db_client:
+        with st.expander("☁️ 데이터 영구 저장소 활성화 방법", expanded=True):
+            st.markdown("""
+            현재 임시 로컬 DB 상태입니다. **서버가 재부팅되어도 월/수/금 데이터가 영구 보존**되도록 아래 가이드를 활성화하세요!
+            
+            **🛠️ 활성화 순서:**
+            1. 구글이나 파이어베이스 콘솔에서 **Firestore Database**를 활성화합니다.
+            2. 프로젝트 설정 -> [서비스 계정]에서 **새 비공개 키(JSON)**를 발급받습니다.
+            3. Streamlit Cloud의 앱 세팅 화면 -> **Secrets** 영역에 아래 내용을 그대로 복사해 넣으면 끝!
+            """)
+            st.code("""
+[gcp_service_account]
+type = "service_account"
+project_id = "본인 프로젝트ID"
+private_key_id = "발급받은 키ID"
+private_key = "-----BEGIN PRIVATE KEY-----\\n본인 개인키\\n-----END PRIVATE KEY-----\\n"
+client_email = "서비스계정 이메일"
+client_id = "고객ID"
+auth_uri = "https://accounts.google.com/o/oauth2/auth"
+token_uri = "https://oauth2.googleapis.com/token"
+auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
+client_x509_cert_url = "인증 주소"
+            """, language="toml")
+            st.info("💡 세팅이 완료되면 아래 초록색 아이콘으로 변하며 영구 저장이 개시됩니다.")
+    else:
+        st.success("☁️ 클라우드 실시간 동기화 완료 (데이터 영구 동기화 중)")
+
+    st.markdown("---")
     st.markdown("### 🌐 다운로드 언어 설정")
     header_lang = st.radio("다운로드 파일의 열 제목 언어", ["중국어 (번역)", "한국어 (기본)"], help="중국어 선택 시 다운로드되는 엑셀 파일의 헤더가 자동으로 중국어로 변경됩니다.")
+
+    st.markdown("---")
+    st.markdown("### 🛠️ 시스템 관리")
+    if st.button("🧹 메모리 초기화 (캐시 비우기)"):
+        st.cache_data.clear()
+        st.success("메모리가 쾌적하게 초기화되었습니다!")
+        
+    if st.button("🚨 누적 DB 전체 삭제"):
+        if db_client:
+            try:
+                # 클라우드 내 컬렉션 문서 일괄 삭제
+                docs = db_client.collection("artifacts").document(APP_ID).collection("public").document("data").collection("lopy_trend").stream()
+                for doc in docs:
+                    doc.reference.delete()
+                st.success("클라우드 데이터베이스가 성공적으로 포맷되었습니다!")
+            except Exception as e:
+                st.error(f"클라우드 초기화 실패: {e}")
+        else:
+            if os.path.exists(DB_FILE):
+                os.remove(DB_FILE)
+            st.success("로컬 임시 DB가 초기화되었습니다! 새로고침 해주세요.")
 
     st.markdown("---")
     st.markdown("### 🔥 검색량 급등 매칭")
@@ -89,7 +214,6 @@ with st.sidebar:
         st.success(f"✅ {len(promo_ids)}개의 프로모션 상품ID 대기 중")
 
     st.markdown("---")
-    st.markdown("### 💾 자동 누적 데이터베이스")
     current_db = load_db()
     st.info(f"📊 현재 누적된 트렌드 데이터: **{len(current_db)}건**")
 
@@ -100,27 +224,8 @@ with st.sidebar:
             data=csv_backup,
             file_name="lopy_trend_db_backup.csv",
             mime="text/csv",
-            help="서버 재부팅으로 데이터가 날아갈 경우를 대비해 가끔씩 백업해두세요!"
+            help="클라우드가 동기화되지 않을 경우를 대비해 수동으로 간직할 백업용 파일입니다!"
         )
-
-    st.markdown("---")
-    st.markdown("**⬆️ 백업된 DB 파일 복구**")
-    db_upload = st.file_uploader("다운받아둔 백업 CSV 업로드", type=['csv'])
-    if db_upload:
-        restored_df = pd.read_csv(db_upload, dtype={'날짜': str})
-        save_db(restored_df)
-        st.success("✅ DB 복구 완료! 화면을 새로고침 해주세요.")
-
-    st.markdown("---")
-    st.markdown("### 🛠️ 시스템 관리")
-    if st.button("🧹 메모리 초기화 (캐시 비우기)"):
-        st.cache_data.clear()
-        st.success("메모리가 쾌적하게 초기화되었습니다!")
-        
-    if st.button("🚨 누적 DB 전체 삭제"):
-        if os.path.exists(DB_FILE):
-            os.remove(DB_FILE)
-        st.success("DB가 초기화되었습니다! 새로고침 해주세요.")
 
 # ==========================================
 # 🚀 스마트 데이터 분석 함수 (유연한 시트명/열이름/업체명 감지)
@@ -160,7 +265,6 @@ def process_single_file(file_name, file_bytes):
         v_name = None
         vendor_col = None
         for c in df.columns:
-            # 단순 '업체'가 아닌 '업체명' 열을 타겟팅하여 잘못된 코드/인덱스 매칭 방지
             if '업체명' in c:
                 vendor_col = c
                 break
@@ -170,11 +274,11 @@ def process_single_file(file_name, file_bytes):
             if val and val.lower() != 'nan':
                 v_name = normalize_text(val)
 
-        # 추출한 업체명이 숫자로만 되어 있거나 길이가 1자 이하(예: '1', '2')인 경우는 잘못 매핑된 것으로 간주하고 초기화
+        # 추출한 업체명이 숫자로만 되어 있거나 길이가 1자 이하인 경우는 잘못 매핑된 것으로 간주하고 초기화
         if v_name and (v_name.isdigit() or len(v_name) <= 1):
             v_name = None
 
-        # 업체명 열이 없거나 내용이 비어있다면 파일명에서 스마트 분석 (바잉로그 0401 등 대응)
+        # 업체명 열이 없거나 내용이 비어있다면 파일명에서 스마트 분석
         if not v_name or v_name == 'nan' or v_name == '':
             clean_file_name = normalize_text(os.path.splitext(file_name)[0])
             tokens = re.split(r'[\s_,\-\[\]\(\)]+', clean_file_name)
@@ -192,7 +296,7 @@ def process_single_file(file_name, file_bytes):
             num_match = re.findall(r'\d+', file_name)
             date_str = "".join(num_match) if num_match else "오늘"
 
-        # 4. 가격 현황 열 탐색 고도화 ('가격현황', '현황', '상태' 유연 대응)
+        # 4. 가격 현황 열 탐색 고도화
         status_col = None
         for c in df.columns:
             if any(k in c.replace(" ", "") for k in ['가격현황', '현황', '가격상태', '상태']):
@@ -214,7 +318,7 @@ def process_single_file(file_name, file_bytes):
         best_count = len(best_df)
         best_ratio = (best_count / total_sku * 100) if total_sku > 0 else 0
 
-        # 5. 열 이름 유연성 보정 (상품ID, 옵션, 최저가, 판매입찰가, 희망조정가)
+        # 5. 열 이름 유연성 보정
         col_keywords = {
             '상품ID': ['상품ID', '상품 ID', '아이디', 'ID'],
             '옵션': ['옵션', '옵션명', '사이즈', 'SIZE'],
@@ -234,7 +338,7 @@ def process_single_file(file_name, file_bytes):
             if actual_col and actual_col in bad_df.columns:
                 bad_df_lite[target_key] = bad_df[actual_col]
             else:
-                bad_df_lite[target_key] = "" # 없는 열은 비워서 호환성 유지
+                bad_df_lite[target_key] = "" 
 
         return {
             '날짜': str(date_str),
@@ -319,23 +423,131 @@ final_db_df = load_db()
 
 # --- 탭 1: 트렌드 대시보드 ---
 with tab1:
-    st.subheader("🏢 업체별 BEST PRICE 점유율 변화 추이")
-    
     if not final_db_df.empty:
-        fig = px.line(
-            final_db_df, x='날짜', y='BEST PRICE 비중(%)',
-            color='업체명', text='BEST PRICE 비중(%)', markers=True
+        # 일별 / 주차별 보기 방식 라디오 토글
+        view_mode = st.radio(
+            "📊 분석 보기 방식 선택", 
+            ["일별 트렌드 (Daily)", "주차별 누적 트렌드 (Weekly)"], 
+            horizontal=True,
+            help="주차별 누적 트렌드를 선택하시면, 매일 올린 데이터들이 주차별로 누적 합산되어 정확한 가중평균 비중으로 시각화됩니다."
         )
-        fig.update_traces(textposition="top center", texttemplate='%{text}%', marker=dict(size=10, line=dict(width=2, color='white')))
-        fig.update_layout(
-            yaxis_title="BEST PRICE 비중 (%)", xaxis_title="데이터 기준일", 
-            height=500, plot_bgcolor='white', yaxis=dict(gridcolor='#eeeeee'),
-            xaxis=dict(type='category', gridcolor='#eeeeee'), legend_title="업체명"
-        )
-        st.plotly_chart(fig, use_container_width=True)
 
-        st.markdown("**📅 누적된 상세 수치 표**")
-        st.dataframe(final_db_df, use_container_width=True, hide_index=True)
+        st.markdown("---")
+        st.subheader("⚡ 실시간 가격방어 증감율 (Delta)")
+        
+        # 일별/주별 증감율 계산 영역
+        if view_mode == "일별 트렌드 (Daily)":
+            dates = sorted(final_db_df['날짜'].unique())
+            if len(dates) >= 2:
+                latest_date = dates[-1]
+                prev_date = dates[-2]
+                
+                cols = st.columns(len(final_db_df['업체명'].unique()))
+                for idx, vendor in enumerate(sorted(final_db_df['업체명'].unique())):
+                    vendor_data = final_db_df[final_db_df['업체명'] == vendor]
+                    latest_row = vendor_data[vendor_data['날짜'] == latest_date]
+                    prev_row = vendor_data[vendor_data['날짜'] == prev_date]
+                    
+                    if not latest_row.empty and not prev_row.empty:
+                        latest_val = latest_row.iloc[0]['BEST PRICE 비중(%)']
+                        prev_val = prev_row.iloc[0]['BEST PRICE 비중(%)']
+                        delta_val = round(latest_val - prev_val, 1)
+                        
+                        display_name = VENDOR_MAP.get(vendor, vendor)
+                        cols[idx % len(cols)].metric(
+                            label=f"{display_name} (전일대비)",
+                            value=f"{latest_val}%",
+                            delta=f"{delta_val:+}%"
+                        )
+            else:
+                st.info("ℹ️ 일간 증감율(변동치)을 확인하려면 최소 2일 이상의 데이터가 업로드되어야 합니다.")
+        else:
+            weekly_df = final_db_df.copy()
+            weeks = []
+            iso_weeks = []
+            for d in weekly_df['날짜']:
+                w_name, iso_w = get_week_info(d)
+                weeks.append(w_name)
+                iso_weeks.append(iso_w)
+                
+            weekly_df['주차'] = weeks
+            weekly_df['iso_week'] = iso_weeks
+            
+            grouped_weekly = weekly_df.groupby(['주차', 'iso_week', '업체명']).agg({
+                '총 SKU': 'sum',
+                'BEST PRICE 개수': 'sum',
+                'BAD 개수': 'sum'
+            }).reset_index()
+            
+            grouped_weekly['BEST PRICE 비중(%)'] = grouped_weekly.apply(
+                lambda r: round((r['BEST PRICE 개수'] / r['총 SKU'] * 100), 1) if r['총 SKU'] > 0 else 0,
+                axis=1
+            )
+            grouped_weekly = grouped_weekly.sort_values(by=['iso_week', '업체명'])
+            
+            # 주간 증감율 계산
+            all_weeks = sorted(grouped_weekly['iso_week'].unique())
+            if len(all_weeks) >= 2:
+                latest_week = all_weeks[-1]
+                prev_week = all_weeks[-2]
+                
+                cols = st.columns(len(grouped_weekly['업체명'].unique()))
+                for idx, vendor in enumerate(sorted(grouped_weekly['업체명'].unique())):
+                    vendor_data = grouped_weekly[grouped_weekly['업체명'] == vendor]
+                    latest_row = vendor_data[vendor_data['iso_week'] == latest_week]
+                    prev_row = vendor_data[vendor_data['iso_week'] == prev_week]
+                    
+                    if not latest_row.empty and not prev_row.empty:
+                        latest_val = latest_row.iloc[0]['BEST PRICE 비중(%)']
+                        prev_val = prev_row.iloc[0]['BEST PRICE 비중(%)']
+                        delta_val = round(latest_val - prev_val, 1)
+                        
+                        display_name = VENDOR_MAP.get(vendor, vendor)
+                        cols[idx % len(cols)].metric(
+                            label=f"{display_name} (전주대비)",
+                            value=f"{latest_val}%",
+                            delta=f"{delta_val:+}%"
+                        )
+            else:
+                st.info("ℹ️ 주간 증감율(변동치)을 확인하려면 최소 2주 이상의 데이터가 주별로 분석되어야 합니다.")
+
+        st.markdown("---")
+        st.subheader("🏢 업체별 BEST PRICE 점유율 트렌드 라인")
+
+        # 꺾은선 차트 및 수치 표 표출
+        if view_mode == "일별 트렌드 (Daily)":
+            fig = px.line(
+                final_db_df, x='날짜', y='BEST PRICE 비중(%)',
+                color='업체명', text='BEST PRICE 비중(%)', markers=True
+            )
+            fig.update_traces(textposition="top center", texttemplate='%{text}%', marker=dict(size=10, line=dict(width=2, color='white')))
+            fig.update_layout(
+                yaxis_title="BEST PRICE 비중 (%)", xaxis_title="데이터 기준일 (일별)", 
+                height=500, plot_bgcolor='white', yaxis=dict(gridcolor='#eeeeee'),
+                xaxis=dict(type='category', gridcolor='#eeeeee'), legend_title="업체명"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+            st.markdown("**📅 누적된 상세 수치 표 (일별)**")
+            st.dataframe(final_db_df, use_container_width=True, hide_index=True)
+            
+        else:
+            fig = px.line(
+                grouped_weekly, x='주차', y='BEST PRICE 비중(%)',
+                color='업체명', text='BEST PRICE 비중(%)', markers=True
+            )
+            fig.update_traces(textposition="top center", texttemplate='%{text}%', marker=dict(size=10, line=dict(width=2, color='white')))
+            fig.update_layout(
+                yaxis_title="BEST PRICE 비중 (%)", xaxis_title="데이터 기준 주차 (주별)", 
+                height=500, plot_bgcolor='white', yaxis=dict(gridcolor='#eeeeee'),
+                xaxis=dict(type='category', gridcolor='#eeeeee'), legend_title="업체명"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+            st.markdown("**📅 주차별 누적 상세 수치 표**")
+            display_weekly = grouped_weekly[['주차', '업체명', '총 SKU', 'BEST PRICE 비중(%)', 'BEST PRICE 개수', 'BAD 개수']]
+            st.dataframe(display_weekly, use_container_width=True, hide_index=True)
+            
     else:
         st.info("💡 아직 누적된 데이터가 없습니다. 엑셀 파일을 업로드하면 이곳에 트렌드가 기록되기 시작합니다.")
 
@@ -424,7 +636,6 @@ with tab2:
                         st.download_button(
                             label=btn_label,
                             data=excel_data,
-                            # 다운로드 파일명을 DINGSTOCK_0608_Bad Only.xlsx 형태로 직관적으로 치환
                             file_name=f"{mapped_vendor}_{latest_date}_Bad Only.xlsx", 
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
                             type="primary",
