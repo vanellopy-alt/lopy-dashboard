@@ -261,38 +261,63 @@ st.markdown("매일 **오늘 만들어진 최저가 매칭 파일들만** 올려
 
 uploaded_files = st.file_uploader("오늘자 엑셀 파일 업로드 (.xlsx)", type=["xlsx"], accept_multiple_files=True)
 
-today_bad_data = []
+# Streamlit은 라디오/셀렉트 변경만 해도 전체 스크립트를 다시 실행합니다.
+# 업로드 파일이 그대로 남아 있으면 매번 재분석처럼 보이므로,
+# 파일 목록이 실제로 바뀐 경우에만 분석을 다시 실행하도록 캐시합니다.
+if 'last_upload_signature' not in st.session_state:
+    st.session_state.last_upload_signature = None
+if 'today_bad_data_cache' not in st.session_state:
+    st.session_state.today_bad_data_cache = []
+if 'error_logs_cache' not in st.session_state:
+    st.session_state.error_logs_cache = []
+
+today_bad_data = st.session_state.today_bad_data_cache
 
 if uploaded_files:
-    progress_bar = st.progress(0, text="데이터 분석 및 매칭 중...")
-    new_trend_data = []
-    error_logs = []
-    total_files = len(uploaded_files)
+    upload_signature = tuple((file.name, file.size) for file in uploaded_files)
 
-    for i, file in enumerate(uploaded_files):
-        progress_bar.progress((i + 1) / total_files, text=f"[{i+1}/{total_files}] '{file.name}' 분석 중... ⏳")
-        data, error = process_single_file(file.name, file.getvalue())
-        if data:
-            trend_row = {k: v for k, v in data.items() if k != 'bad_df'}
-            new_trend_data.append(trend_row)
-            today_bad_data.append(data)
-        if error:
-            error_logs.append(error)
-            
-    progress_bar.empty()
+    if upload_signature != st.session_state.last_upload_signature:
+        progress_bar = st.progress(0, text="데이터 분석 및 매칭 중...")
+        new_trend_data = []
+        error_logs = []
+        today_bad_data = []
+        total_files = len(uploaded_files)
 
-    for log in error_logs:
+        for i, file in enumerate(uploaded_files):
+            progress_bar.progress((i + 1) / total_files, text=f"[{i+1}/{total_files}] '{file.name}' 분석 중... ⏳")
+            data, error = process_single_file(file.name, file.getvalue())
+            if data:
+                trend_row = {k: v for k, v in data.items() if k != 'bad_df'}
+                new_trend_data.append(trend_row)
+                today_bad_data.append(data)
+            if error:
+                error_logs.append(error)
+
+        progress_bar.empty()
+
+        st.session_state.last_upload_signature = upload_signature
+        st.session_state.today_bad_data_cache = today_bad_data
+        st.session_state.error_logs_cache = error_logs
+
+        if new_trend_data:
+            new_df = pd.DataFrame(new_trend_data)
+            db_df = load_db()
+            combined_df = pd.concat([db_df, new_df]).drop_duplicates(subset=['날짜', '업체명'], keep='last')
+            combined_df = combined_df.sort_values(['날짜', '업체명'])
+            save_db(combined_df)
+    else:
+        today_bad_data = st.session_state.today_bad_data_cache
+
+    for log in st.session_state.error_logs_cache:
         if log['type'] == 'warning':
             st.warning(log['msg'])
         else:
             st.error(log['msg'])
-
-    if new_trend_data:
-        new_df = pd.DataFrame(new_trend_data)
-        db_df = load_db()
-        combined_df = pd.concat([db_df, new_df]).drop_duplicates(subset=['날짜', '업체명'], keep='last')
-        combined_df = combined_df.sort_values(['날짜', '업체명'])
-        save_db(combined_df)
+else:
+    st.session_state.last_upload_signature = None
+    st.session_state.today_bad_data_cache = []
+    st.session_state.error_logs_cache = []
+    today_bad_data = []
 
 # ==========================================
 # 🚨 오늘의 BAD 상품 업데이트 화면 (단일 통합 화면)
