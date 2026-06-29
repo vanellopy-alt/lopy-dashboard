@@ -33,7 +33,9 @@ VENDOR_MAP = {
     '도카이': 'Haiyun',
     '주식회사 클러치테크': 'Dingstock',
     '클러치테크': 'Dingstock',
-    '클러치': 'Dingstock'
+    '클러치': 'Dingstock',
+    '유한회사 모바이트레이드': 'STEP DREAM',
+    '모바이트레이드': 'STEP DREAM'
 }
 
 # ==========================================
@@ -166,6 +168,15 @@ def process_single_file(file_name, file_bytes):
 
         if v_name and (v_name.isdigit() or len(v_name) <= 1):
             v_name = None
+
+        # STEP DREAM 치환
+        user_id = None
+        for c in df.columns:
+            if '유저' in c and '아이디' in c:
+                user_id = str(df[c].iloc[0]).strip()
+                break
+        if user_id == '10843431':
+            v_name = 'STEP DREAM'
 
         if not v_name or v_name == 'nan' or v_name == '':
             clean_file_name = normalize_text(os.path.splitext(file_name)[0])
